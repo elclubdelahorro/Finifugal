@@ -7,6 +7,25 @@
 -- The panel is OverlayUI, Blood Flow edition: engine-tweened background,
 -- pooled lists, dirty writes only, no per-frame layout.
 
+-- ── BOOT BEACON ───────────────────────────────────────────────────────────
+-- A load that dies silently is the one failure nobody can diagnose: nothing
+-- on screen, nothing in the console, no way to tell "the executor blocked the
+-- download" from "crashed at line 3000". Every stage says its name once, and
+-- the trail is readable later on GENV.Finifugal.boot.
+local BOOT = {}
+local function beacon(stage, loud)
+	local s = tostring(stage)
+	BOOT[#BOOT + 1] = s
+	pcall(function() print("[Finifugal] " .. s) end)
+	if loud then
+		pcall(function()
+			if type(notify) == "function" then notify("[Finifugal] " .. s) end
+		end)
+	end
+end
+
+beacon("boot", true)
+
 local Config = {
 	esp = {
 		enabled = true,
@@ -273,6 +292,10 @@ if MATCHA_UI then
 	Config.esp.chams = false
 end
 
+beacon(string.format("caps: %s matcha=%s drawing=%s inst=%s",
+	CAPS.name, tostring(MATCHA_UI), tostring(CAPS.drawing),
+	tostring(type(Instance) == "table" and type(Instance.new) == "function")))
+
 -- DRAWING FALLBACK ----------------------------------------------------------
 -- No Drawing library means the ESP has nowhere to go. The cheat draws eight
 -- primitives per player, and a ScreenGui can serve all eight: frames for the
@@ -537,7 +560,7 @@ local function hasMoverel()
 end
 
 if CAPS.genv or GENV then
-	GENV.Finifugal = { caps = CAPS, drawingShim = drawingShim }
+	GENV.Finifugal = { caps = CAPS, drawingShim = drawingShim, boot = BOOT }
 end
 
 local function camera()
@@ -2315,7 +2338,11 @@ end
 -- ══ MENU ═══════════════════════════════════════════════════════════════════
 -- Instance menu. Ñ opens it; every switch writes straight into Config, so the
 -- panel and the hotkeys can never disagree about state.
-local UI_KEYS = { [Config.ui.key] = true } -- Ñ on a Spanish layout
+-- Matcha's Enum is a subset: KeyCode holds A-Z and the mouse buttons, so
+-- Semicolon does not exist and a table literal keyed on it dies with "table
+-- index is nil" before the gate can draw. Build the set, never the literal.
+local UI_KEYS = {}
+if Config.ui.key ~= nil then UI_KEYS[Config.ui.key] = true end -- Ñ on a Spanish layout
 pcall(function() UI_KEYS[Enum.KeyCode["Ñ"]] = true end)
 
 local uiOpen = true
@@ -2338,20 +2365,30 @@ local List = {}
 List.__index = List
 
 local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
+-- TweenService is not on Matcha's documented service list. The panel never
+-- runs there, but this read is at file scope, so a nil return or a raise would
+-- take the load down before the gate draws.
+local TweenService
+pcall(function() TweenService = game:GetService("TweenService") end)
 local UIS = game:GetService("UserInputService")
 
 local MAX_ROWS, MAX_LISTS, MAX_ITEMS = 128, 16, 64
 local MAX_CONNECTIONS = 4096
 local HEADER, ROW, GAP, HEIGHT = 36, 30, 4, 440
-local FONT, BOLD, MONO = Enum.Font.Gotham, Enum.Font.GothamBold, Enum.Font.Code
+-- This library only ever runs on the desktop path, but its constants sit at
+-- file scope, so they execute on every VM. Probe them: Matcha's Enum carries
+-- KeyCode and nothing else, and it ships no TweenInfo at all.
+local FONT, BOLD, MONO, SWITCH
+pcall(function()
+	FONT, BOLD, MONO = Enum.Font.Gotham, Enum.Font.GothamBold, Enum.Font.Code
+	SWITCH = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+end)
 local LINE = Color3.fromRGB(31, 36, 44)
 local DEFAULT = {
     bg = Color3.fromRGB(13, 15, 18), row = Color3.fromRGB(21, 24, 29),
     accent = Color3.fromRGB(57, 217, 138), text = Color3.fromRGB(230, 235, 242),
     muted = Color3.fromRGB(123, 132, 148), off = Color3.fromRGB(43, 49, 59),
 }
-local SWITCH = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local OFF_POS, ON_POS = UDim2.new(0, 3, .5, 0), UDim2.new(1, -17, .5, 0)
 local function offset(x, y) return UDim2.fromOffset(x, y) end
 local function scale(x, y) return UDim2.fromScale(x, y) end
@@ -4550,8 +4587,14 @@ print(string.format("[OD] Finifugal 2.0 loaded — Ñ: menu, RightShift: ESP, K:
 
 end
 
-if Key.unlocked() then
+local function launch()
+	beacon("key accepted", true)
 	main()
+end
+
+if Key.unlocked() then
+	launch()
 else
-	keyGate(main)
+	beacon("asking for key")
+	keyGate(launch)
 end
