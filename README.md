@@ -12,6 +12,28 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/elclubdelahorro/Finif
 Or paste `criminality.lua` straight into the executor. The gate asks once and
 remembers the key in `CriminalityOD/key.txt`.
 
+### Matcha
+
+Matcha has no `Instance.new`, so the custom panel cannot exist there. The build
+detects it and puts the same settings in a native **Finifugal** tab instead —
+toggles, sliders, colour pickers, and real keybind widgets:
+
+```lua
+loadstring(httpget("https://raw.githubusercontent.com/elclubdelahorro/Finifugal/main/criminality.lua"))()
+```
+
+What changes on Matcha:
+
+| desktop executor | Matcha |
+|---|---|
+| custom panel, semicolon to open | native tab, always visible |
+| `Highlight` wallhack | off — no `Instance.new` |
+| `Camera:WorldToViewportPoint` | hand projection from CFrame + FOV |
+| `Enum.KeyCode.RightShift` | raw keyboard poll (RShift) |
+
+Everything else — ESP, aim, fire, markers, the key gate and the kill switch —
+runs the same.
+
 ## Files
 
 | file | what it is |
