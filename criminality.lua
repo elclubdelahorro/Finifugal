@@ -214,8 +214,12 @@ local function alpha(t)
 	return t
 end
 
+-- Matcha does not ship getgenv; _G is the shared table there. One handle, so
+-- every publish and every read goes through the same place on both.
+local GENV = (type(getgenv) == "function" and getgenv()) or _G
+
 -- Re-executing in the same session would otherwise leave the old ESP floating.
-local prev = getgenv and getgenv().CriminalityOD
+local prev = GENV and GENV.CriminalityOD
 if prev and type(prev.unload) == "function" then
 	pcall(prev.unload)
 end
@@ -257,6 +261,17 @@ local CAPS = (function()
 	c.matcha = string.find(string.lower(c.name), "matcha", 1, true) ~= nil
 	return c
 end)()
+
+-- Matcha is an external VM: it does not hook the engine, so Instance.new does
+-- not exist. Every frame the panel is made of is impossible there. The native
+-- library is the only menu: UI.AddTab builds widgets Matcha draws itself.
+local MATCHA_UI = type(UI) == "table" and type(UI.AddTab) == "function"
+if MATCHA_UI then
+	CAPS.matcha = true
+	-- Highlight is an engine object and Matcha has no Instance.new, so the
+	-- wallhack has nothing to attach. Off here beats a menu row that lies.
+	Config.esp.chams = false
+end
 
 -- DRAWING FALLBACK ----------------------------------------------------------
 -- No Drawing library means the ESP has nowhere to go. The cheat draws eight
@@ -521,12 +536,61 @@ local function hasMoverel()
 	return moverelOn
 end
 
-if CAPS.genv then
-	getgenv().Finifugal = { caps = CAPS, drawingShim = drawingShim }
+if CAPS.genv or GENV then
+	GENV.Finifugal = { caps = CAPS, drawingShim = drawingShim }
 end
 
 local function camera()
 	return Workspace.CurrentCamera
+end
+
+-- Matcha emulates the engine externally and its Camera has no
+-- WorldToViewportPoint. Project by hand from CFrame + FOV instead: that is the
+-- same pinhole the engine uses, and unlike the global WorldToScreen it still
+-- returns coordinates for points just outside the viewport, so boxes clip at
+-- the edge instead of vanishing. The camera snapshot is cached for 4 ms; a
+-- projection must not be one bridge read per drawing.
+local camAt, camCF, camVP, camFov = -1e9, nil, nil, 70
+local function camSnap(cam)
+	local now = os.clock()
+	if now - camAt < 0.004 and camCF then return camCF, camVP, camFov end
+	camAt = now
+	pcall(function()
+		camCF = cam.CFrame
+		camVP = cam.ViewportSize
+		camFov = cam.FieldOfView
+	end)
+	return camCF, camVP, camFov
+end
+
+local viewPoint
+if CAPS.matcha then
+	viewPoint = function(cam, p)
+		if not cam then return nil end
+		local cf, vp, fov = camSnap(cam)
+		if cf and vp then
+			local rel
+			local ok = pcall(function() rel = cf:PointToObjectSpace(p) end)
+			if ok and rel and rel.Z < -1e-3 then
+				local z = -rel.Z
+				local focal = (vp.Y * 0.5) / math.tan(math.rad(fov or 70) * 0.5)
+				return { X = vp.X * 0.5 + rel.X / z * focal,
+					Y = vp.Y * 0.5 - rel.Y / z * focal, Z = z }
+			end
+			if ok and rel then return nil end
+		end
+		if type(WorldToScreen) == "function" then
+			local sp, on = WorldToScreen(p)
+			if not sp then return nil end
+			return { X = sp.X, Y = sp.Y, Z = on and 1 or -1 }
+		end
+		return nil
+	end
+else
+	viewPoint = function(cam, p)
+		if not cam then return nil end
+		return cam:WorldToViewportPoint(p)
+	end
 end
 
 -- Criminality aims with the cursor, not the camera centre. LockCenter pins
@@ -546,9 +610,16 @@ local function aimOrigin()
 	local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
 	local center = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
 	local result = center
-	if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
-		local ok, p = pcall(function() return UserInputService:GetMouseLocation() end)
-		if ok and p then
+	local lockCenter = Enum.MouseBehavior and Enum.MouseBehavior.LockCenter
+	-- Matcha has neither Enum.MouseBehavior nor GetMouseLocation; its Mouse
+	-- class does carry X/Y, so the cursor still resolves over there.
+	if lockCenter == nil or UserInputService.MouseBehavior ~= lockCenter then
+		local got, p = pcall(function() return UserInputService:GetMouseLocation() end)
+		if not (got and p) then
+			local okm, m = pcall(function() return LocalPlayer:GetMouse() end)
+			if okm and m then got, p = true, { X = m.X, Y = m.Y } end
+		end
+		if got and p then
 			result = Vector2.new(p.X, p.Y)
 		end
 	end
@@ -682,7 +753,10 @@ local function aimIgnored(plr)
 		if Config.aim.ignoreNames[name] then return true end
 		if Config.aim.exclude[name] then return true end
 	end
-	local display = plr.DisplayName
+	-- DisplayName is not on every VM's Player; a missing read must not kill
+	-- the sweep that fills the whole ESP.
+	local display
+	pcall(function() display = plr.DisplayName end)
 	if type(display) == "string" and display ~= "" then
 		display = string.lower(display)
 		if Config.aim.exclude[display] then return true end
@@ -691,11 +765,23 @@ local function aimIgnored(plr)
 	return false
 end
 
-local rayParams = RaycastParams.new()
-rayParams.IgnoreWater = true
+-- RaycastParams is not in Matcha's documented surface. Build it only if it is
+-- actually there: without a filter the ray hits the local character first and
+-- every visibility test reports "blocked", so LOS gets switched off instead.
+local rayParams
 do
-	local ok, ft = pcall(function() return Enum.RaycastFilterType.Exclude end)
-	rayParams.FilterType = ok and ft or Enum.RaycastFilterType.Blacklist
+	local ok, rp = pcall(function() return RaycastParams.new() end)
+	if ok and rp then
+		rayParams = rp
+		pcall(function() rayParams.IgnoreWater = true end)
+		pcall(function()
+			local ft = Enum.RaycastFilterType.Exclude or Enum.RaycastFilterType.Blacklist
+			if ft ~= nil then rayParams.FilterType = ft end
+		end)
+	end
+end
+if not rayParams and CAPS.matcha then
+	Config.combat.requireLOS = false
 end
 
 -- One reusable filter table: a fresh one per raycast per player per tick was
@@ -707,8 +793,19 @@ local function lineOfSight(plr, fromPos, toPos)
 	filterBuf[1] = LocalPlayer.Character or char
 	filterBuf[2] = char
 	filterBuf[3] = nil
-	rayParams.FilterDescendantsInstances = filterBuf
-	local hit = Workspace:Raycast(fromPos, toPos - fromPos, rayParams)
+	local okr, hit
+	if rayParams then
+		pcall(function() rayParams.FilterDescendantsInstances = filterBuf end)
+		okr, hit = pcall(function()
+			return Workspace:Raycast(fromPos, toPos - fromPos, rayParams)
+		end)
+	else
+		okr, hit = pcall(function()
+			return Workspace:Raycast(fromPos, toPos - fromPos)
+		end)
+	end
+	-- No ray support in this VM: clear beats a hard aim lockout.
+	if not okr then return true end
 	if not hit then return true end
 	if char and hit.Instance:IsDescendantOf(char) then return true end
 	return false
@@ -954,13 +1051,28 @@ local function setHitbox(mode)
 	print(string.format("[OD] hitbox = %s", Config.aim.hitbox))
 end
 
+-- Drawing text differs per VM: desktop executors take a numeric Font and a
+-- Size; Matcha documents FontSize plus a Drawing.Fonts table. Set what exists
+-- and drop what does not — a rejected property write must not kill a frame.
+local TEXT_FONT = 2
+pcall(function()
+	if Drawing.Fonts ~= nil and Drawing.Fonts.UI ~= nil then
+		TEXT_FONT = Drawing.Fonts.UI
+	end
+end)
+
+local function textStyle(t, size)
+	pcall(function() t.Font = TEXT_FONT end)
+	pcall(function() t.Size = size end)
+	if CAPS.matcha then pcall(function() t.FontSize = size end) end
+	pcall(function() t.OutlineColor = Color3.new(0, 0, 0) end)
+end
+
 local function makeText()
 	local t = Drawing.new("Text")
 	t.Center = true
 	t.Outline = true
-	t.OutlineColor = Color3.new(0, 0, 0)
-	t.Font = 2
-	t.Size = Config.esp.textSize
+	textStyle(t, Config.esp.textSize)
 	t.Transparency = alpha(0)
 	t.Visible = false
 	return t
@@ -996,7 +1108,7 @@ local function ensure(plr)
 	o.head.Thickness = 1
 	o.head.Radius = 3
 	o.head.Transparency = alpha(0)
-	o.items.Size = 12
+	textStyle(o.items, 12)
 	esp[plr] = o
 	return o
 end
@@ -1019,8 +1131,8 @@ end
 -- outside the viewport — a projection that blows up must not size a box.
 local function project(cam, vp, p)
 	stats.projections = stats.projections + 1
-	local sp = cam:WorldToViewportPoint(p)
-	if sp.Z <= 0 then return nil end
+	local sp = viewPoint(cam, p)
+	if not sp or sp.Z <= 0 then return nil end
 	local x, y = sp.X, sp.Y
 	if x ~= x or y ~= y then return nil end
 	if x < -vp.X * 2 or x > vp.X * 3 or y < -vp.Y * 2 or y > vp.Y * 3 then
@@ -1340,6 +1452,8 @@ chamsOff = function(plr)
 end
 
 local function chamsFor(plr, t, write)
+	-- Matcha cannot create an Instance; the Highlight path is impossible there.
+	if CAPS.matcha then return end
 	local char = t and t.char
 	if not char then
 		chamsOff(plr)
@@ -1685,9 +1799,7 @@ local function poiPool(i)
 	local text = Drawing.new("Text")
 	text.Center = true
 	text.Outline = true
-	text.OutlineColor = Color3.new(0, 0, 0)
-	text.Font = 2
-	text.Size = Config.poi.textSize
+	textStyle(text, Config.poi.textSize)
 	text.Transparency = alpha(0)
 	text.Color = Config.poi.color
 	text.Visible = false
@@ -1754,8 +1866,8 @@ local function updatePoi(now)
 		-- the walk to finish and republish.
 		local shown = s.kind ~= "spot" or Config.poi.show[s.name] ~= false
 		if shown and dist <= Config.poi.maxDistance then
-			local sp = cam:WorldToViewportPoint(s.pos)
-			if sp.Z > 0 then
+			local sp = viewPoint(cam, s.pos)
+			if sp and sp.Z > 0 then
 				local col = s.color or Config.poi.color
 				if d.qCol ~= col then
 					d.qCol = col
@@ -1843,8 +1955,8 @@ local function findTarget()
 		if lpart then
 			local lpos = aimPoint(lpart, loff)
 			local ldist = (lpart.Position - camPos).Magnitude
-			local lsp = cam:WorldToViewportPoint(lpos)
-			if ldist <= Config.aim.range and lsp.Z > 0 then
+			local lsp = viewPoint(cam, lpos)
+			if ldist <= Config.aim.range and lsp and lsp.Z > 0 then
 				local lscore = (Vector2.new(lsp.X, lsp.Y) - origin).Magnitude
 				if lscore <= Config.aim.fov * 1.25 then
 					return lockedTarget
@@ -1865,8 +1977,8 @@ local function findTarget()
 				-- A target behind the camera cannot be inside the crosshair;
 				-- skip the projection instead of paying for it.
 				if dist <= Config.aim.range and toPart:Dot(look) > 0 then
-					local sp = cam:WorldToViewportPoint(pos)
-					if sp.Z > 0 then
+					local sp = viewPoint(cam, pos)
+					if sp and sp.Z > 0 then
 						local score = (Vector2.new(sp.X, sp.Y) - origin).Magnitude
 						if score <= Config.aim.fov then
 							if not Config.aim.visibleOnly or lineOfSight(plr, camPos, raw) then
@@ -1899,6 +2011,29 @@ local aimDebugAt = -1e9
 local aimFallbackUntil = 0
 local aimProbe = { t = 0, gap = 0 }
 
+-- CFrame.lookAt is not on Matcha's constructor list. Build the same rotation
+-- matrix by hand when it is missing: X column right, Y column up, -Z forward.
+local function lookCFrame(pos, target)
+	if type(CFrame.lookAt) == "function" then
+		local ok, cf = pcall(CFrame.lookAt, pos, target)
+		if ok and cf then return cf end
+	end
+	local f = target - pos
+	if f.Magnitude < 1e-6 then return nil end
+	f = f.Unit
+	local right = f:Cross(Vector3.new(0, 1, 0))
+	if right.Magnitude < 1e-6 then
+		right = Vector3.new(1, 0, 0)
+	else
+		right = right.Unit
+	end
+	local up = right:Cross(f).Unit
+	return CFrame.new(pos.X, pos.Y, pos.Z,
+		right.X, up.X, -f.X,
+		right.Y, up.Y, -f.Y,
+		right.Z, up.Z, -f.Z)
+end
+
 local function applyAim(plr, dt, boost, firing)
 	local cam = camera()
 	if not cam then return end
@@ -1907,8 +2042,8 @@ local function applyAim(plr, dt, boost, firing)
 	if not part then return end
 
 	local aimPos = aimPoint(part, off)
-	local sp = cam:WorldToViewportPoint(aimPos)
-	if sp.Z <= 0 then return end
+	local sp = viewPoint(cam, aimPos)
+	if not sp or sp.Z <= 0 then return end
 
 	local now = os.clock()
 	local soft = Config.aim.style ~= "snap"
@@ -1998,7 +2133,8 @@ local function applyAim(plr, dt, boost, firing)
 	else
 		blended = blended.Unit
 	end
-	cam.CFrame = CFrame.lookAt(camPos, camPos + blended)
+	local cf = lookCFrame(camPos, camPos + blended)
+	if cf then cam.CFrame = cf end
 end
 
 -- Auto-fire + recoil control.
@@ -2038,7 +2174,13 @@ local function userFiring()
 	local ok, down = pcall(function()
 		return UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 	end)
-	return ok and down or false
+	if ok then return down == true end
+	-- Matcha ships no Enum.UserInputType; ismouse1pressed reads the button.
+	if type(ismouse1pressed) == "function" then
+		local okm, pressed = pcall(ismouse1pressed)
+		if okm then return pressed == true end
+	end
+	return false
 end
 
 local function stopFire()
@@ -2084,8 +2226,8 @@ local function canFire(target)
 	-- Two thresholds: start on the head, keep the burst while it is close.
 	-- Releasing on every recoil kick was the stutter that lost half the mag.
 	if Config.combat.alignPx > 0 or Config.combat.releasePx > 0 then
-		local sp = cam:WorldToViewportPoint(aimPoint(part, off))
-		if sp.Z <= 0 then return false end
+		local sp = viewPoint(cam, aimPoint(part, off))
+		if not sp or sp.Z <= 0 then return false end
 		local gap = (Vector2.new(sp.X, sp.Y) - aimOrigin()).Magnitude
 		local limit = shooting and Config.combat.releasePx or Config.combat.alignPx
 		if limit > 0 and gap > limit then return false end
@@ -2979,15 +3121,15 @@ local Key = (function()
 		elseif type(http) == "table" and type(http.request) == "function" then req = http.request
 		end
 		if not req then
-			-- Executors without request() still ship a GET path. This is what
-			-- makes a raw GitHub status document work on a bare client.
+			-- Executors without request() still ship a GET path. The bare
+			-- global is native on Matcha; the DataModel method is the fallback.
 			if method == "GET" then
-				local okg, body = pcall(function() return game:HttpGet(url) end)
-				if okg and type(body) == "string" then return body end
 				if type(httpget) == "function" then
 					local okh, plain = pcall(httpget, url)
-					if okh and type(plain) == "string" then return plain end
+					if okh and type(plain) == "string" and plain ~= "" then return plain end
 				end
+				local okg, body = pcall(function() return game:HttpGet(url) end)
+				if okg and type(body) == "string" then return body end
 			end
 			return nil, "no request()"
 		end
@@ -3226,9 +3368,9 @@ local Key = (function()
 	return M
 end)()
 
-if CAPS.genv then
-	getgenv().Finifugal.bake = Key.bake
-	getgenv().Finifugal.key = Key
+if CAPS.genv or GENV then
+	GENV.Finifugal.bake = Key.bake
+	GENV.Finifugal.key = Key
 end
 
 -- The gate is a second OverlayUI panel with nothing on it but the key row.
@@ -3238,6 +3380,48 @@ end
 local function keyGate(onUnlock)
 	local status = "locked"
 	local uiKey
+
+	-- Matcha has no Instance.new, so the gate cannot be a panel there. One
+	-- native tab, one field, one button. On a good key the tab is dropped and
+	-- the body is built exactly as it is on the overlay path.
+	if MATCHA_UI then
+		local typed = ""
+		local opened = false
+		local spawner = (type(task) == "table" and type(task.spawn) == "function")
+			and task.spawn or (type(spawn) == "function" and spawn or function(fn) fn() end)
+		local okTab, tabErr = pcall(function()
+			UI.AddTab("Finifugal key", function(tab)
+				if opened then return end
+				local s = tab:Section("LICENSE", "Left")
+				s:InputText("f2_key", "Key", "", function(text) typed = text end)
+				s:Button("Unlock", function()
+					-- The fetch is synchronous in this VM; run it off the frame
+					-- that drew the button so the menu does not freeze.
+					spawner(function()
+						local plain = typed
+						local okv, got = pcall(UI.GetValue, "f2_key")
+						if okv and type(got) == "string" and got ~= "" then plain = got end
+						local good, msg = Key.check(plain)
+						status = tostring(msg or (good and "ok" or "rejected"))
+						if good then
+							opened = true
+							pcall(UI.RemoveTab, "Finifugal key")
+							onUnlock()
+						else
+							print("[OD] key: " .. status)
+						end
+					end)
+				end)
+				s:Tip("issued with this copy")
+				s:Text("State: " .. status)
+			end)
+		end)
+		if not okTab then
+			warn("[OD] key gate failed to draw: " .. tostring(tabErr))
+			onUnlock()
+		end
+		return
+	end
 
 	local ok, err = pcall(function()
 		uiKey = OverlayUI.new({
@@ -3572,8 +3756,205 @@ local function refreshMenu()
 	end
 end
 
+-- ══ MATCHA UI ══════════════════════════════════════════════════════════════
+-- The native binding. Matcha's tab callback runs once per frame, so every
+-- widget is declared with a stable id and writes Config directly. Keybinds are
+-- native widgets; the frame loop reads them back by id.
+local function matchaMenu()
+	if not MATCHA_UI then return false end
+
+	-- A re-exec would otherwise stack a second Finifugal tab on the old one.
+	if type(UI.RemoveTab) == "function" then
+		pcall(UI.RemoveTab, "Finifugal")
+	end
+
+	local function paint(tab)
+		local L = tab:Section("Visuals", "Left")
+
+		L:Toggle("f2_esp", "ESP", Config.esp.enabled, function(v)
+			Config.esp.enabled = v; espDirty = true
+		end)
+		-- Keybind sits directly after a Toggle; RShift = 0xA1.
+		L:Keybind("f2_esp_kb", 0xA1, "toggle")
+		L:Toggle("f2_box", "Box", Config.esp.box, function(v)
+			Config.esp.box = v; espDirty = true
+		end)
+		L:ColorPicker("f2_cvis", Config.esp.visibleColor.R, Config.esp.visibleColor.G,
+			Config.esp.visibleColor.B, 1, function(c)
+				Config.esp.visibleColor = c; espDirty = true
+			end)
+		L:Toggle("f2_name", "Name", Config.esp.name, function(v)
+			Config.esp.name = v; espDirty = true
+		end)
+		L:Toggle("f2_hp", "Health bar", Config.esp.health, function(v)
+			Config.esp.health = v; espDirty = true
+		end)
+		L:Toggle("f2_dist", "Distance", Config.esp.distance, function(v)
+			Config.esp.distance = v; espDirty = true
+		end)
+
+		local E = tab:Section("ESP detail", "Left")
+
+		E:Toggle("f2_tracer", "Tracer", Config.esp.tracer, function(v)
+			Config.esp.tracer = v; espDirty = true
+		end)
+		E:ColorPicker("f2_chid", Config.esp.hiddenColor.R, Config.esp.hiddenColor.G,
+			Config.esp.hiddenColor.B, 1, function(c)
+				Config.esp.hiddenColor = c; espDirty = true
+			end)
+		E:Toggle("f2_dot", "Head dot", Config.esp.headDot, function(v)
+			Config.esp.headDot = v; espDirty = true
+		end)
+		E:Toggle("f2_items", "Items", Config.esp.items, function(v)
+			Config.esp.items = v; espDirty = true
+		end)
+		E:Toggle("f2_team", "Team check", Config.esp.teamCheck, function(v)
+			Config.esp.teamCheck = v
+		end)
+		E:SliderInt("f2_range", "ESP range", 50, 5000, Config.esp.range, function(v)
+			Config.esp.range = v; espDirty = true
+		end)
+		E:SliderInt("f2_text", "Text size", 8, 28, Config.esp.textSize, function(v)
+			Config.esp.textSize = v; espDirty = true
+		end)
+		E:SliderInt("f2_thick", "Box width", 1, 5, Config.esp.boxThickness, function(v)
+			Config.esp.boxThickness = v; espDirty = true
+		end)
+		E:Text("Wallhack needs Instance.new; use the desktop executor.")
+
+		local A = tab:Section("Aim", "Left")
+
+		A:Toggle("f2_aim", "Aim + fire", Config.aim.enabled, function(v)
+			Config.aim.enabled = v
+		end)
+		A:Keybind("f2_aim_kb", 0x4B, "toggle")
+		A:Combo("f2_style", "Style", { "soft", "snap" },
+			Config.aim.style == "snap" and 1 or 0, function(idx)
+				Config.aim.style = (idx == 1) and "snap" or "soft"
+			end)
+		A:Combo("f2_mode", "Aim source", { "auto", "cursor", "camera" },
+			Config.aim.mode == "cursor" and 1 or (Config.aim.mode == "camera" and 2 or 0),
+			function(idx)
+				Config.aim.mode = ({ "auto", "cursor", "camera" })[idx + 1] or "auto"
+			end)
+		A:SliderInt("f2_fov", "FOV", 10, 800, Config.aim.fov, function(v)
+			Config.aim.fov = v; Config.aim.showFov = true
+		end)
+		A:SliderInt("f2_arange", "Aim range", 20, 1000, Config.aim.range, function(v)
+			Config.aim.range = v
+		end)
+		A:SliderInt("f2_speed", "Slew px/s", 100, 6000, Config.aim.maxSpeed, function(v)
+			Config.aim.maxSpeed = v
+		end)
+		A:SliderInt("f2_drift", "Soft drift", 0, 40, Config.aim.softDrift, function(v)
+			Config.aim.softDrift = v
+		end)
+		A:SliderInt("f2_zone", "Soft zone", 10, 400, Config.aim.softZone, function(v)
+			Config.aim.softZone = v
+		end)
+		A:SliderFloat("f2_smooth", "Smoothing", 0.01, 1.0, Config.aim.smoothness, "%.2f",
+			function(v) Config.aim.smoothness = v end)
+		A:SliderFloat("f2_gain", "Snap gain", 0.05, 1.0, Config.aim.gain, "%.2f",
+			function(v) Config.aim.gain = v end)
+		A:SliderFloat("f2_dead", "Deadzone", 0.0, 5.0, Config.aim.deadzone, "%.1f",
+			function(v) Config.aim.deadzone = v end)
+		A:SliderFloat("f2_lead", "Velocity lead", 0.0, 0.3, Config.aim.prediction, "%.3f",
+			function(v) Config.aim.prediction = v end)
+		A:Toggle("f2_hit", "Head / chest", Config.aim.hitbox == "head", function(v)
+			Config.aim.hitbox = v and "head" or "chest"
+		end)
+		A:Toggle("f2_visible", "Visible only", Config.aim.visibleOnly, function(v)
+			Config.aim.visibleOnly = v
+		end)
+		A:Toggle("f2_rnd", "Part randomizer", Config.aim.randomizer, function(v)
+			Config.aim.randomizer = v
+		end)
+		A:SliderInt("f2_rhead", "Roll: head %", 0, 100, Config.aim.rnd.head,
+			function(v) Config.aim.rnd.head = v end)
+		A:SliderInt("f2_rchest", "Roll: chest %", 0, 100, Config.aim.rnd.chest,
+			function(v) Config.aim.rnd.chest = v end)
+		A:SliderInt("f2_rarm", "Roll: arm %", 0, 100, Config.aim.rnd.arm,
+			function(v) Config.aim.rnd.arm = v end)
+		A:SliderInt("f2_rleg", "Roll: leg %", 0, 100, Config.aim.rnd.leg,
+			function(v) Config.aim.rnd.leg = v end)
+
+		local C = tab:Section("Combat", "Right")
+
+		C:Toggle("f2_auto", "Auto fire", Config.combat.autoShoot,
+			function(v) Config.combat.autoShoot = v end)
+		C:Toggle("f2_hold", "Hold LMB", Config.combat.holdFire,
+			function(v) Config.combat.holdFire = v end)
+		C:SliderFloat("f2_rate", "Fire rate", 0.02, 0.50, Config.combat.fireRate, "%.2f",
+			function(v) Config.combat.fireRate = v end)
+		C:Toggle("f2_los", "Require line of sight", Config.combat.requireLOS,
+			function(v) Config.combat.requireLOS = v end)
+		C:SliderFloat("f2_delay", "Trigger delay", 0.0, 0.30, Config.combat.triggerDelay, "%.2f",
+			function(v) Config.combat.triggerDelay = v end)
+		C:SliderInt("f2_align", "Start px", 0, 40, Config.combat.alignPx,
+			function(v) Config.combat.alignPx = v end)
+		C:SliderInt("f2_release", "Keep px", 0, 60, Config.combat.releasePx,
+			function(v) Config.combat.releasePx = v end)
+		C:Toggle("f2_recoil", "Recoil control", Config.combat.recoilControl,
+			function(v) Config.combat.recoilControl = v end)
+		C:SliderFloat("f2_ralpha", "Recoil strength", 0.0, 1.0, Config.combat.recoilAlpha, "%.2f",
+			function(v) Config.combat.recoilAlpha = v end)
+
+		local M = tab:Section("Map", "Right")
+
+		M:Toggle("f2_poi", "Markers", Config.poi.enabled,
+			function(v) Config.poi.enabled = v end)
+		M:Toggle("f2_loot", "Dropped tools", Config.poi.loot,
+			function(v) Config.poi.loot = v end)
+		M:SliderInt("f2_pdist", "Marker range", 100, 20000, Config.poi.maxDistance,
+			function(v) Config.poi.maxDistance = v end)
+		M:SliderInt("f2_pmax", "Max markers", 1, 200, Config.poi.maxMarkers,
+			function(v) Config.poi.maxMarkers = v end)
+		M:SliderInt("f2_prefresh", "Rescan every s", 2, 60, Config.poi.refresh,
+			function(v) Config.poi.refresh = v end)
+		M:SliderInt("f2_psize", "Marker text", 8, 24, Config.poi.textSize,
+			function(v) Config.poi.textSize = v end)
+		M:Button("Rescan map", function()
+			poi.lastDone = -1e9
+			poiStart()
+			rebuildPoi()
+		end)
+		M:Button("Show dealers + armory", function()
+			for name in pairs(poi.names) do
+				if poiIsKeyword(name) then Config.poi.show[name] = true end
+			end
+			for _, kw in ipairs(Config.poi.armoryKeys) do Config.poi.show[kw] = true end
+			for _, kw in ipairs(Config.poi.dealerKeys) do Config.poi.show[kw] = true end
+			Config.poi.enabled = true
+			poi.lastDone = -1e9
+			poiStart()
+			rebuildPoi()
+		end)
+
+		local P = tab:Section("Performance", "Right")
+
+		P:Toggle("f2_meter", "Frame meter", Config.perf.meter,
+			function(v) Config.perf.meter = v end)
+		P:SliderInt("f2_poihz", "Marker rate Hz", 5, 60, Config.perf.poiHz,
+			function(v) Config.perf.poiHz = v end)
+		P:Toggle("f2_debug", "Aim debug", Config.aim.debug,
+			function(v) Config.aim.debug = v end)
+		P:Text("RShift ESP · K aim · H head/chest")
+	end
+
+	local ok, err = pcall(function()
+		UI.AddTab("Finifugal", paint)
+	end)
+	if not ok then
+		warn("[OD] matcha tab failed: " .. tostring(err))
+		return false
+	end
+	return true
+end
+
 local function buildUi()
 	if not Config.ui.enabled then return end
+
+	if MATCHA_UI then return matchaMenu() end
 
 	local ok, err = pcall(function()
 		ui = OverlayUI.new({
@@ -3850,8 +4231,52 @@ end
 -- the POI walk and the menu rows. Per-frame work is projection only.
 local sweepAt, slowAt = -1e9, -1e9
 
+-- ══ MATCHA KEYS ═══════════════════════════════════════════════════════════
+-- Matcha's InputObject carries KeyCode only for A-Z and the mouse buttons, and
+-- its VM has no Enum for RightShift. The native tab's keybind is the source
+-- when it has painted; the raw keyboard is the fallback.
+local mkeyPrev = {}
+local function mkeyEdge(id, vk)
+	local v = nil
+	if type(UI) == "table" and type(UI.GetValue) == "function" then
+		local ok, got = pcall(UI.GetValue, id)
+		if ok and type(got) == "boolean" then v = got end
+	end
+	if v ~= nil then
+		local was = mkeyPrev[id .. "v"]
+		mkeyPrev[id .. "v"] = v
+		if was ~= nil and v ~= was then return true end
+		return false
+	end
+	local down = iskeypressed(vk) and true or false
+	local was = mkeyPrev[vk]
+	mkeyPrev[vk] = down
+	return down and not was
+end
+
+local function matchaKeys()
+	if not CAPS.matcha or type(iskeypressed) ~= "function" then return end
+	if type(isrbxactive) == "function" then
+		local ok, active = pcall(isrbxactive)
+		if ok and active == false then return end
+	end
+	if mkeyEdge("f2_esp_kb", 0xA1) then
+		Config.esp.enabled = not Config.esp.enabled
+		espDirty = true
+		print(string.format("[OD] esp = %s", tostring(Config.esp.enabled)))
+	end
+	if mkeyEdge("f2_aim_kb", 0x4B) then
+		aimActive = not aimActive
+		print(string.format("[OD] aim = %s", tostring(aimActive)))
+	end
+	if mkeyEdge("f2_hit_kb", 0x48) then
+		setHitbox(Config.aim.hitbox == "chest" and "head" or "chest")
+	end
+end
+
 local function onRender(dt)
 	frameStamp = frameStamp + 1
+	matchaKeys()
 	local now = os.clock()
 	local costAt = Config.perf.meter and now or nil
 
@@ -3942,8 +4367,8 @@ local function aimTick(dt)
 	local cam = camera()
 	local part, off = aimPartFor(track[target])
 	if cam and part then
-		local sp = cam:WorldToViewportPoint(aimPoint(part, off))
-		if sp.Z > 0 then
+		local sp = viewPoint(cam, aimPoint(part, off))
+		if sp and sp.Z > 0 then
 			aimMarker.Position = Vector2.new(sp.X, sp.Y)
 			aimMarker.Radius = 8
 			aimMarker.Visible = true
@@ -4027,7 +4452,7 @@ local function unload()
 	uiDestroy()
 end
 
-inputLink = UserInputService.InputBegan:Connect(function(input, gpe)
+local function onInputBegan(input, gpe)
 	-- A pending rebind owns the next key press, processed focus or not.
 	if binding ~= nil then
 		local key = input.KeyCode
@@ -4066,21 +4491,29 @@ inputLink = UserInputService.InputBegan:Connect(function(input, gpe)
 			print(string.format("[OD] esp.%s = %s", field, tostring(Config.esp[field])))
 		end
 	end
+end
+
+pcall(function()
+	inputLink = UserInputService.InputBegan:Connect(onInputBegan)
 end)
 
-focusLink = UserInputService.WindowFocusReleased:Connect(function()
-	aimActive = false
-	stopFire()
+pcall(function()
+	focusLink = UserInputService.WindowFocusReleased:Connect(function()
+		aimActive = false
+		stopFire()
+	end)
 end)
 
-leaveLink = Players.PlayerRemoving:Connect(function(plr)
-	destroy(plr)
-	chamsOff(plr)
-	vis[plr] = nil
+pcall(function()
+	leaveLink = Players.PlayerRemoving:Connect(function(plr)
+		destroy(plr)
+		chamsOff(plr)
+		vis[plr] = nil
+	end)
 end)
 
-if getgenv then
-	getgenv().CriminalityOD = {
+if GENV then
+	GENV.CriminalityOD = {
 		config = Config,
 		unload = unload,
 		poiRescan = function()
