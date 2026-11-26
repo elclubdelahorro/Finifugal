@@ -804,6 +804,336 @@ end
 
 loadExclusions()
 
+-- ══ CFG ═══════════════════════════════════════════════════════════════════
+-- The build's settings in the Crim cfg vocabulary: one flat JSON object, 170
+-- keys, the shape the other menu reads. Every key this cheat has an opinion on
+-- is written from Config. Every key it has no opinion on — desync, freecam,
+-- silent aim, the resolver — is carried from the base below untouched, so
+-- loading the file never silently resets a setting this cheat does not own.
+local CFG_PATH = "CriminalityOD/crim.cfg"
+
+local CFG_BASE = {
+	accent_color = "[1.0,0.4117647111415863,0.25882354378700256,1.0]",
+	aimbot = true,
+	aimbot_hitpart = "0",
+	aimbot_range = "342",
+	aimbot_wallcheck = false,
+	aimkey = "18",
+	aimkeymethod = "0",
+	aimtype = "1",
+	aimview = false,
+	allow_unsafe_execution = false,
+	ambience = false,
+	ambience_color = "[1.0,1.0,1.0,1.0]",
+	armorbar = false,
+	blur_background = false,
+	box = true,
+	box_color = "[1.0,1.0,1.0,1.0]",
+	boxtype = "0",
+	brightness = false,
+	brightness_glowy = false,
+	brightness_value = "2.0",
+	chams = false,
+	chams_color = "[1.0,1.0,1.0,0.4000000059604645]",
+	chams_filled = true,
+	chams_outline = false,
+	chams_outline_color = "[1.0,1.0,1.0,1.0]",
+	chams_type = "2",
+	change_fps = false,
+	circle_color = "[1.0,1.0,1.0,1.0]",
+	clicktp = false,
+	clicktpbindkey = "17",
+	clicktpbindmethod = "1",
+	damage_reticles = true,
+	darken_background = false,
+	deadzone_color = "[1.0,1.0,1.0,1.0]",
+	deadzone_fill_color = "[1.0,1.0,1.0,1.0]",
+	desync = false,
+	desync_interval = "10",
+	desynckey = "5",
+	desyncmethod = "0",
+	display_circle = false,
+	distance_esp = true,
+	enable_raycast = false,
+	esp = true,
+	esp_notvisible_color = "[1.0,0.0,0.0,1.0]",
+	esp_visible_color = "[0.6313725709915161,0.7843137383460999,1.0,1.0]",
+	esp_wallcheck = false,
+	exposure = false,
+	exposure_value = "2.0",
+	fill_color = "[1.0,1.0,1.0,0.07500000298023224]",
+	filledbox = false,
+	fly = false,
+	fly_amount = "1",
+	flybind = "70",
+	flybindmethod = "0",
+	flymethod = "0",
+	fog = false,
+	fog_color = "[1.0,1.0,1.0,1.0]",
+	fog_glow = false,
+	fog_value = "0.5",
+	follow_target = false,
+	fontstyle = "0",
+	fov = "100",
+	fov_color = "[1.0,1.0,1.0,1.0]",
+	fov_fill_color = "[1.0,1.0,1.0,0.07500000298023224]",
+	fov_filled = false,
+	fps_to_set = "240",
+	freecam = false,
+	freecam_speed = "1.5",
+	freecamkey = "76",
+	freecamtype = "0",
+	gradient_text = true,
+	head_dot = false,
+	head_dot_color = "[1.0,1.0,1.0,1.0]",
+	head_dot_glow = false,
+	health_based_color = true,
+	healthbar = true,
+	healthbar_color = "[0.0,1.0,0.0,1.0]",
+	healthcheck = false,
+	hitbox_extend = false,
+	hitbox_healthcheck = false,
+	hitbox_size = "20",
+	hitbox_teamcheck = false,
+	infjump = false,
+	keybind_list = true,
+	lag_notifier = true,
+	lock_character_position = false,
+	main_prediction = "0.15000000596046448",
+	menufontstyle = "1",
+	menukey = "45",
+	menukeymethod = "0",
+	name_color = "[1.0,1.0,1.0,1.0]",
+	name_esp = true,
+	noclip = false,
+	noclipkeynoclipbind = "90",
+	noclipmethod = "0",
+	outline = true,
+	performance = "2",
+	prediction = true,
+	prediction_x = "17.49519920349121",
+	prediction_y = "17.49519920349121",
+	profile_esp = false,
+	radar = true,
+	rapidfire = false,
+	raycast_update = "2500",
+	raycastragebot = false,
+	render_distance = "426",
+	reset_on_desync_off = false,
+	resolver = true,
+	self_esp = false,
+	sensitivity = "1.100000023841858",
+	show_only_visible = false,
+	show_server_position = false,
+	silent_aim = false,
+	silent_fov = "100",
+	silent_fov_color = "[1.0,1.0,1.0,1.0]",
+	silent_fov_fill_color = "[1.0,1.0,1.0,0.07500000298023224]",
+	silent_fov_on = false,
+	silent_healthcheck = false,
+	silent_hitpart = "0",
+	silent_prediction = false,
+	silent_prediction_x = "1.0",
+	silent_prediction_y = "17.31599998474121",
+	silent_smoothing = "0.0",
+	silent_teamcheck = false,
+	silent_wallcheck = false,
+	silentkey = "69",
+	silentkeymethod = "2",
+	sizing_type = "1",
+	skeleton = false,
+	skeleton_color = "[1.0,1.0,1.0,1.0]",
+	smoothness = true,
+	smoothness_x = "2.5",
+	smoothness_y = "2.5",
+	snow = false,
+	speed = false,
+	speed_amount = "1",
+	speedbind = "86",
+	speedbindmethod = "0",
+	speedmethod = "0",
+	streamproof = false,
+	target_strafe = false,
+	targethud = true,
+	targetmethod = "0",
+	targetstrafedistance = "10.0",
+	targetstrafekey = "88",
+	targetstrafekeymethod = "0",
+	targetstrafespeed = "5.0",
+	team_based_color = false,
+	team_check = false,
+	team_check_esp = false,
+	team_flag = false,
+	teleporttofreecam = false,
+	teleporttofreecamkey = "78",
+	teleporttofreecammethod = "3",
+	tool = true,
+	tracers = false,
+	tracers_color = "[1.0,1.0,1.0,1.0]",
+	tracertype = "0",
+	trigger_bot_hitboxmul = "1.0",
+	triggerbot = false,
+	triggerbot_delay_ms = "1",
+	triggerbot_release_delay_ms = "10",
+	triggerbot_teamcheck = false,
+	triggerbot_visualizehitbox = false,
+	triggerbot_wallcheck = false,
+	triggerbotkeybind = "81",
+	triggerbotkeymethod = "0",
+	use_tick = false,
+	usefov = true,
+	vsync = true,
+}
+
+-- The cfg speaks Windows virtual-key codes; the build speaks Enum.KeyCode.
+-- The crossing lives here and nowhere else. Enum.KeyCode is a subset on some
+-- VMs, so every bind is probed instead of indexed.
+local CFG_VK = {}
+local function bindVK(name, vk)
+	local ok, k = pcall(function() return Enum.KeyCode[name] end)
+	if ok and k ~= nil then CFG_VK[k] = vk end
+end
+bindVK("K", 0x4B)
+bindVK("H", 0x48)
+bindVK("T", 0x54)
+bindVK("Y", 0x59)
+bindVK("U", 0x55)
+bindVK("I", 0x49)
+bindVK("O", 0x4F)
+bindVK("P", 0x50)
+bindVK("Semicolon", 0xBA)
+bindVK("RightShift", 0xA1)
+
+local function cfgVK(k, fallback)
+	if k ~= nil and CFG_VK[k] ~= nil then return CFG_VK[k] end
+	return fallback
+end
+
+local function cfgColor(c, a)
+	if type(c) ~= "userdata" and type(c) ~= "table" then return nil end
+	return { c.R, c.G, c.B, a or 1 }
+end
+
+-- Config, expressed in the cfg's vocabulary. Anything missing from this list
+-- is a key the build does not have an opinion on and stays at its base value.
+local function cfgValues()
+	local t = {}
+	for k, v in pairs(CFG_BASE) do t[k] = v end
+
+	local e, a, c = Config.esp, Config.aim, Config.combat
+
+	t.esp = e.enabled
+	t.box = e.box
+	t.name_esp = e.name
+	t.healthbar = e.health
+	t.distance_esp = e.distance
+	t.tracers = e.tracer
+	t.head_dot = e.headDot
+	t.chams = e.chams
+	t.filledbox = false
+	t.render_distance = e.range
+	t.team_check_esp = e.teamCheck
+
+	local vis = cfgColor(e.visibleColor, 1)
+	local hid = cfgColor(e.hiddenColor, 1)
+	if vis then
+		t.esp_visible_color = vis
+		t.box_color = vis
+		t.tracers_color = vis
+		t.head_dot_color = vis
+		t.fov_color = vis
+	end
+	if hid then t.esp_notvisible_color = hid end
+	local fill = cfgColor(e.chamsFill, 1 - (e.chamsTransparency or 0))
+	if fill then t.chams_color = fill end
+	local outl = cfgColor(e.chamsOutline, 1)
+	if outl then t.chams_outline_color = outl end
+
+	t.aimbot = a.enabled
+	t.aimbot_hitpart = (a.hitbox == "head") and 0.0 or 1.0
+	t.aimbot_range = a.range
+	t.aimbot_wallcheck = a.visibleOnly
+	t.aimkey = cfgVK(a.toggleKey, t.aimkey)
+	t.fov = a.fov
+	t.usefov = a.showFov
+	t.main_prediction = a.prediction
+	t.prediction = a.autoLead
+	t.show_only_visible = a.visibleOnly
+	t.team_check = a.teamCheck
+	t.menukey = cfgVK(Config.ui.key, t.menukey)
+
+	-- Triggerbot is the closest thing this cfg has to auto-fire: it pulls the
+	-- trigger when the target is under the crosshair, which is what alignPx
+	-- gates here. The release delay has no counterpart and keeps its base.
+	t.triggerbot = c.autoShoot
+	t.triggerbot_delay_ms = math.floor(c.triggerDelay * 1000 + 0.5)
+	t.triggerbot_wallcheck = c.requireLOS
+	t.triggerbot_teamcheck = a.teamCheck
+
+	return t
+end
+
+-- Deterministic JSON. Keys sorted, so the same Config always writes the same
+-- bytes. Floats at 15 significant digits: 17 exposes the float64 artefact
+-- (1 - 0.55 prints as 0.44999999999999996) and a colour does not need it.
+local function cfgNum(n)
+	n = tonumber(n) or 0
+	if n ~= n or n == math.huge or n == -math.huge then return "0.0" end
+	if n == math.floor(n) and math.abs(n) < 1e15 then
+		return string.format("%.1f", n)
+	end
+	return string.format("%.15g", n)
+end
+
+local function cfgEncode(t)
+	local keys = {}
+	for k in pairs(t) do keys[#keys + 1] = k end
+	table.sort(keys)
+	local parts = {}
+	for i = 1, #keys do
+		local k = keys[i]
+		local v = t[k]
+		local enc
+		if type(v) == "boolean" then
+			enc = v and "true" or "false"
+		elseif type(v) == "number" then
+			enc = cfgNum(v)
+		elseif type(v) == "table" then
+			local xs = {}
+			for j = 1, #v do xs[j] = cfgNum(v[j]) end
+			enc = "[" .. table.concat(xs, ",") .. "]"
+		else
+			-- A string in this table is a raw JSON fragment carried from the
+			-- base file: a key this cheat does not own, passed through
+			-- byte-for-byte instead of re-formatted and nudged.
+			enc = tostring(v)
+		end
+		parts[#parts + 1] = '"' .. k .. '":' .. enc
+	end
+	return "{" .. table.concat(parts, ",") .. "}"
+end
+
+local function cfgText()
+	return cfgEncode(cfgValues())
+end
+
+local function cfgSave()
+	if type(writefile) ~= "function" then return false, "no file access" end
+	local ok, err = pcall(function()
+		if type(isfolder) == "function" and type(makefolder) == "function"
+			and not isfolder("CriminalityOD") then
+			makefolder("CriminalityOD")
+		end
+		writefile(CFG_PATH, cfgText())
+	end)
+	return ok, err
+end
+
+local function cfgCount()
+	local n = 0
+	for _ in pairs(cfgValues()) do n = n + 1 end
+	return n
+end
 -- Hard skip: a named player is never a target, team or not.
 local function aimIgnored(plr)
 	local name = type(plr.Name) == "string" and string.lower(plr.Name) or nil
@@ -4022,6 +4352,10 @@ local function matchaMenu()
 			poiStart()
 			rebuildPoi()
 		end)
+		M:Button("Save cfg", function()
+			local ok, err = cfgSave()
+			print("[OD] cfg " .. (ok and ("written: " .. CFG_PATH) or ("failed: " .. tostring(err))))
+		end)
 		M:Button("Show dealers + armory", function()
 			for name in pairs(poi.names) do
 				if poiIsKeyword(name) then Config.poi.show[name] = true end
@@ -4134,6 +4468,11 @@ local function buildUi()
 
 		ui:toggle("Lead from ping", function() return Config.aim.autoLead end,
 			function(v) Config.aim.autoLead = v end)
+
+		ui:button("Save cfg", function()
+			local ok, err = cfgSave()
+			print("[OD] cfg " .. (ok and ("written: " .. CFG_PATH) or ("failed: " .. tostring(err))))
+		end)
 
 		local styleButton
 		local function paintStyle()
@@ -4640,6 +4979,9 @@ if GENV then
 		-- of reaching into the chunk's locals.
 		clock = clock,
 		aimLead = aimLead,
+		cfgText = cfgText,
+		cfgSave = cfgSave,
+		cfgKeys = cfgCount,
 	}
 end
 
