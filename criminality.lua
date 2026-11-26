@@ -19,7 +19,11 @@ local function beacon(stage, loud)
 	pcall(function() print("[Finifugal] " .. s) end)
 	if loud then
 		pcall(function()
-			if type(notify) == "function" then notify("[Finifugal] " .. s) end
+			-- Matcha's notify is (message, title, duration) and a bare message
+			-- leaves the title nil there. Three args are harmless elsewhere.
+			if type(notify) == "function" then
+				notify("[Finifugal] " .. s, "Finifugal", 4)
+			end
 		end)
 	end
 end
@@ -102,6 +106,9 @@ local Config = {
 		partOffset = Vector3.new(0, 0, 0), -- studs added to the hitbox point
 		mode = "auto", -- "auto" | "cursor" | "camera"
 		prediction = 0.08, -- seconds of velocity lead; 160 ms ping wants ~0.08
+		-- Read the lead off GetPingValue instead of the slider. Matcha exposes
+		-- it; where the function is missing the slider stays the source.
+		autoLead = true,
 		showFov = true,
 		fireSnap = true, -- snap style only: trigger down, the gap closes now
 		debug = false,
@@ -295,6 +302,34 @@ end
 beacon(string.format("caps: %s matcha=%s drawing=%s inst=%s",
 	CAPS.name, tostring(MATCHA_UI), tostring(CAPS.drawing),
 	tostring(type(Instance) == "table" and type(Instance.new) == "function")))
+
+-- ── CLOCK ──────────────────────────────────────────────────────────────────
+-- Matcha documents tick() as its monotonic clock and does not document `os`
+-- at all; os.clock in that VM is process CPU time, so every "0.1 s has passed"
+-- test built on it stalls the moment the frame loop goes quiet — ESP stops
+-- refreshing, the POI walk never advances, the fire gap never opens. Pick the
+-- clock once, at load, and every delta in this file reads from it.
+local clock = (function()
+	if CAPS.matcha and type(tick) == "function" then
+		local ok, v = pcall(tick)
+		-- Matcha's tick is monotonic, Roblox's is Unix seconds. Every use in
+		-- this file is a difference, so either origin works.
+		if ok and type(v) == "number" then return tick end
+	end
+	if type(os) == "table" and type(os.clock) == "function" then return os.clock end
+	return function() return 0 end
+end)()
+
+-- Wall clock for the key cache only. Matcha does not document `os` at all, so
+-- a missing clock must read as "no expiry", never as an index on nil in the
+-- middle of a key check.
+local function wallclock()
+	if type(os) == "table" and type(os.time) == "function" then
+		local ok, v = pcall(os.time)
+		if ok and type(v) == "number" then return v end
+	end
+	return 0
+end
 
 -- DRAWING FALLBACK ----------------------------------------------------------
 -- No Drawing library means the ESP has nowhere to go. The cheat draws eight
@@ -575,7 +610,7 @@ end
 -- projection must not be one bridge read per drawing.
 local camAt, camCF, camVP, camFov = -1e9, nil, nil, 70
 local function camSnap(cam)
-	local now = os.clock()
+	local now = clock()
 	if now - camAt < 0.004 and camCF then return camCF, camVP, camFov end
 	camAt = now
 	pcall(function()
@@ -953,11 +988,11 @@ local function trackPlayer(plr, t)
 			t.boxOff = cf.Position - t.hrp.Position
 		end
 	end
-	t.boxAt = os.clock()
+	t.boxAt = clock()
 end
 
 local function sweep()
-	local now = os.clock()
+	local now = clock()
 	local seen = {}
 	for _, plr in ipairs(Players:GetPlayers()) do
 		seen[plr] = true
@@ -1043,7 +1078,7 @@ local function aimPartFor(t, now)
 		return (Config.aim.hitbox == "chest") and t.chest or t.head, nil
 	end
 
-	now = now or os.clock()
+	now = now or clock()
 	local r = t.rnd
 
 	if not r or (now - r.at) >= Config.aim.rndHold then
@@ -1362,7 +1397,7 @@ end
 -- Raycasts are throttled per player; 10 Hz is invisible to the eye.
 
 local function visible(plr, pos)
-	local now = os.clock()
+	local now = clock()
 	local c = vis[plr]
 	if c and now - c.t < 0.1 then
 		return c.v
@@ -1523,7 +1558,7 @@ end
 local function updateChams()
 	local cam = camera()
 	local camPos = cam and cam.CFrame.Position
-	local now = os.clock()
+	local now = clock()
 	local write = now - chamsAt >= 0.1
 	if write then chamsAt = now end
 	for plr, t in pairs(track) do
@@ -1753,7 +1788,7 @@ local function poiPublish()
 	end
 
 	poi.spots = spots
-	poi.lastDone = os.clock()
+	poi.lastDone = clock()
 
 	if Config.poi.debug then
 		print(string.format("[OD] POI: %d spots from %d hits", #spots, #poi.found))
@@ -1764,8 +1799,8 @@ end
 -- On a big map this keeps a scan from landing as a frame spike.
 local function poiStep(budget)
 	local left = budget
-	local deadline = os.clock() + 0.0015
-	while left > 0 and #poi.queue > 0 and os.clock() < deadline do
+	local deadline = clock() + 0.0015
+	while left > 0 and #poi.queue > 0 and clock() < deadline do
 		local inst = poi.queue[#poi.queue]
 		poi.queue[#poi.queue] = nil
 		left = left - 1
@@ -1861,12 +1896,12 @@ local function updatePoi(now)
 
 	if poi.scanning then
 		poiStep(Config.poi.slice)
-	elseif os.clock() - poi.lastDone >= Config.poi.refresh then
+	elseif clock() - poi.lastDone >= Config.poi.refresh then
 		poiStart()
 		poiStep(Config.poi.slice)
 	end
 
-	now = now or os.clock()
+	now = now or clock()
 
 	-- Markers are static world points: 30 Hz projection is indistinguishable
 	-- from every frame and halves the work. A new spot list bypasses the gate.
@@ -1938,6 +1973,36 @@ end
 -- Where the next shot has to land: the hitbox plus the ground the target
 -- covers during the ping window. A 160 ms round trip wants ~80 ms of lead.
 -- `off` is the randomizer's scatter for this hold window; nil when off.
+
+-- Ping-derived lead. GetPingValue is the round trip in milliseconds, and the
+-- shot has to land one one-way trip from now: lead = ping / 2000. Cached for a
+-- second — it is a bridge read and it barely moves between frames.
+local pingAt, pingVal = -1e9, nil
+local function pingLead()
+	if type(GetPingValue) ~= "function" then return nil end
+	local t = clock()
+	if t - pingAt < 1 then return pingVal end
+	pingAt = t
+	local ok, v = pcall(GetPingValue)
+	if ok and type(v) == "number" and v > 0 and v < 1000 then
+		pingVal = v / 2000
+	else
+		pingVal = nil
+	end
+	return pingVal
+end
+
+local function aimLead()
+	if Config.aim.autoLead then
+		local p = pingLead()
+		if p and p > 0 then
+			if p > 0.3 then return 0.3 end
+			return p
+		end
+	end
+	return Config.aim.prediction
+end
+
 local function aimPoint(part, off)
 	local pos = part.Position
 	if off then
@@ -1947,7 +2012,7 @@ local function aimPoint(part, off)
 	if bias and bias.Magnitude > 0 then
 		pos = pos + bias
 	end
-	local lead = Config.aim.prediction
+	local lead = aimLead()
 	if lead and lead > 0 then
 		local v = part.AssemblyLinearVelocity
 		if v then pos = pos + v * lead end
@@ -2068,7 +2133,7 @@ local function applyAim(plr, dt, boost, firing)
 	local sp = viewPoint(cam, aimPos)
 	if not sp or sp.Z <= 0 then return end
 
-	local now = os.clock()
+	local now = clock()
 	local soft = Config.aim.style ~= "snap"
 	local target = Vector2.new(sp.X, sp.Y)
 
@@ -2103,8 +2168,8 @@ local function applyAim(plr, dt, boost, firing)
 	local deadzone = snap and 0 or Config.aim.deadzone
 	if soft then deadzone = math.max(deadzone, 2) end
 
-	if Config.aim.debug and os.clock() - aimDebugAt > 1 then
-		aimDebugAt = os.clock()
+	if Config.aim.debug and clock() - aimDebugAt > 1 then
+		aimDebugAt = clock()
 		print(string.format("[OD] aim %s part=%s dx=%.1f dy=%.1f", soft and "soft" or "snap",
 			part.Name, dx, dy))
 	end
@@ -2264,7 +2329,7 @@ local function updateFire(target)
 		return
 	end
 
-	local now = os.clock()
+	local now = clock()
 	if not fireOKSince then
 		fireOKSince = now
 	end
@@ -3128,7 +3193,7 @@ local Key = (function()
 				and not isfolder("CriminalityOD") then
 				makefolder("CriminalityOD")
 			end
-			writefile(Config.key.path, plain .. "\n" .. tostring(os.time()))
+			writefile(Config.key.path, plain .. "\n" .. tostring(wallclock()))
 		end)
 	end
 
@@ -3231,7 +3296,7 @@ local Key = (function()
 		local url = Config.key.list
 		if Config.key.bust then
 			url = url .. (string.find(url, "?", 1, true) and "&" or "?")
-				.. "t=" .. tostring(os.time())
+				.. "t=" .. tostring(wallclock())
 		end
 		local raw, err = http("GET", url)
 		if not raw then return nil, err end
@@ -3342,7 +3407,7 @@ local Key = (function()
 		end
 
 		if Config.key.provider == "remote" and Config.key.endpoint ~= "" then
-			if at and os.time() - at < Config.key.ttl then
+			if at and wallclock() - at < Config.key.ttl then
 				M.current = plain
 				return true
 			end
@@ -3743,7 +3808,7 @@ end
 local function rebuildPoi()
 	if not poiList then return end
 	poiSeen = poi.version
-	poiShownAt = os.clock()
+	poiShownAt = clock()
 	poiList:clear()
 
 	local names = {}
@@ -3788,7 +3853,7 @@ local function refreshMenu()
 	if exSeen ~= excludeVersion then rebuildExclusions() end
 
 	if poiList and poiSeen ~= poi.version
-		and (poiList._used == 0 or os.clock() - poiShownAt > 0.5 or poiShownAt < 0) then
+		and (poiList._used == 0 or clock() - poiShownAt > 0.5 or poiShownAt < 0) then
 		rebuildPoi()
 	end
 end
@@ -3897,6 +3962,8 @@ local function matchaMenu()
 			function(v) Config.aim.deadzone = v end)
 		A:SliderFloat("f2_lead", "Velocity lead", 0.0, 0.3, Config.aim.prediction, "%.3f",
 			function(v) Config.aim.prediction = v end)
+		A:Toggle("f2_autolead", "Lead from ping", Config.aim.autoLead,
+			function(v) Config.aim.autoLead = v end)
 		A:Toggle("f2_hit", "Head / chest", Config.aim.hitbox == "head", function(v)
 			Config.aim.hitbox = v and "head" or "chest"
 		end)
@@ -4064,6 +4131,9 @@ local function buildUi()
 		end, function(v)
 			Config.aim.prediction = v / 1000
 		end, 20, 0, 300)
+
+		ui:toggle("Lead from ping", function() return Config.aim.autoLead end,
+			function(v) Config.aim.autoLead = v end)
 
 		local styleButton
 		local function paintStyle()
@@ -4314,7 +4384,7 @@ end
 local function onRender(dt)
 	frameStamp = frameStamp + 1
 	matchaKeys()
-	local now = os.clock()
+	local now = clock()
 	local costAt = Config.perf.meter and now or nil
 
 	-- Snapshot first: the fast pass can only project players it can see.
@@ -4366,7 +4436,7 @@ local function onRender(dt)
 	end
 
 	if costAt then
-		perfSample(now, dt, os.clock() - costAt)
+		perfSample(now, dt, clock() - costAt)
 	end
 end
 
@@ -4566,6 +4636,10 @@ if GENV then
 		end,
 		stats = stats,
 		caps = CAPS,
+		-- Test seams. The harness drives the frame loop through these instead
+		-- of reaching into the chunk's locals.
+		clock = clock,
+		aimLead = aimLead,
 	}
 end
 

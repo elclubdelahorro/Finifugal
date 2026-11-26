@@ -30,9 +30,20 @@ What changes on Matcha:
 | `Highlight` wallhack | off — no `Instance.new` |
 | `Camera:WorldToViewportPoint` | hand projection from CFrame + FOV |
 | `Enum.KeyCode.RightShift` | raw keyboard poll (RShift) |
+| `os.clock` for every timer | `tick()` — Matcha's monotonic clock |
+| lead from the slider | `GetPingValue()` / 2000, clamped to 300 ms |
 
-Everything else — ESP, aim, fire, markers, the key gate and the kill switch —
-runs the same.
+The clock row is not cosmetic. Matcha does not document `os` at all, and
+`os.clock` in an external VM is process CPU time: every "0.1 s has passed" test
+built on it stalls when the frame loop goes quiet, so the ESP stops refreshing
+and the marker walk never advances. The build binds `tick()` at load and reads
+`os.time` only through a guarded helper. It also boots with `os` absent
+entirely — that is one of the harness checks.
+
+The lead row is the 160 ms problem stated as arithmetic: the shot has to land one
+one-way trip from now, so lead = ping / 2000. At 160 ms that is 0.08 s, the same
+number the slider shipped with. Turn **Lead from ping** off and the slider is the
+source again.
 
 ## Files
 
